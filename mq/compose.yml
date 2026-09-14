@@ -1,0 +1,26 @@
+name: andesstay-mq
+
+# RabbitMQ de un solo nodo para desarrollo local. El caso pide un cluster de 2 nodos
+# para las evaluaciones en EC2 (ver seccion 7 del caso); ese compose se arma aparte
+# cuando toque desplegar, no hace falta para probar los microservicios en local.
+services:
+  rabbitmq:
+    image: rabbitmq:3.13-management
+    container_name: andesstay-rabbitmq
+    hostname: andesstay-rabbitmq
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USERNAME:-guest}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-guest}
+    ports:
+      - "5672:5672"   # AMQP
+      - "15672:15672" # Management UI (http://localhost:15672)
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  rabbitmq-data:

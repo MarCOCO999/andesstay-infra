@@ -1,0 +1,25 @@
+name: andesstay-db
+
+# Oracle Database Free para desarrollo local. Crea automaticamente el PDB "FREEPDB1"
+# (el mismo que usan por defecto los application.yml de los microservicios) y, gracias a
+# APP_USER/APP_USER_PASSWORD, un usuario de aplicacion listo para usar sin pasos manuales.
+services:
+  oracle:
+    image: gvenzl/oracle-free:23-slim
+    container_name: andesstay-oracle
+    ports:
+      - "1521:1521"
+    environment:
+      ORACLE_PASSWORD: ${ORACLE_PASSWORD:-changeit}
+      APP_USER: ${DB_USERNAME:-andesstay}
+      APP_USER_PASSWORD: ${DB_PASSWORD:-changeit}
+    volumes:
+      - oracle-data:/opt/oracle/oradata
+    healthcheck:
+      test: ["CMD", "healthcheck.sh"]
+      interval: 10s
+      timeout: 10s
+      retries: 30
+
+volumes:
+  oracle-data:

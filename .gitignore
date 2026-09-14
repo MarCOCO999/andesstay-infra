@@ -1,0 +1,7 @@
+# System files
+.DS_Store
+Thumbs.db
+
+# Local env overrides
+.env
+*.local.yml
