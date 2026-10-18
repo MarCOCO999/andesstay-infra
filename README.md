@@ -17,12 +17,30 @@ Cada carpeta es independiente: se pueden levantar todas juntas o solo las que se
 | Herramienta | Para qué | Versión |
 |---|---|---|
 | Git | Clonar los repos | cualquiera |
-| Docker Desktop (con al menos 6 GB de RAM asignados) | Oracle, RabbitMQ y Kafka en local | 4.x |
+| Docker Desktop (abierto antes de levantar la infraestructura) | Oracle, RabbitMQ y Kafka en local | 4.x |
 | Java (JDK) | Compilar y correr los microservicios | 21 o superior |
 | Node.js + npm | Frontend Angular | Node 22 |
 | AWS CLI v2 | Solo para desplegar o administrar AWS | 2.x |
 
-Los 8 repos tienen que quedar como **carpetas hermanas** dentro de una misma carpeta (los scripts de `aws/` buscan los microservicios en `../ms-andesstay-*`):
+**Hardware:** se recomiendan **16 GB de RAM** en el equipo. Oracle, Kafka, RabbitMQ y los 6 microservicios juntos ocupan bastante memoria (en Windows, Docker Desktop corre sobre WSL2 y toma la RAM que necesita del total del equipo).
+
+**Puertos que deben estar libres:** `1521`, `5672`, `15672`, `2181`, `9092`, `8089` (infraestructura), `8081`–`8085`, `8090` (microservicios) y `4200` (frontend).
+
+### Clonar los repos
+
+Los 8 repos tienen que quedar como **carpetas hermanas** dentro de una misma carpeta, y el de infraestructura con el nombre `infra` (los scripts de `aws/` buscan `../ms-andesstay-*` e `infra/db/`). Se clona la rama **`dev`**, que es la que tiene el código al día.
+
+PowerShell:
+
+```powershell
+mkdir AndesStay; cd AndesStay
+$repos = "andesstay-infra", "frontend-andesstay", "ms-andesstay-bff", "ms-andesstay-reservations",
+         "ms-andesstay-catalog", "ms-andesstay-notify", "ms-andesstay-audit", "ms-andesstay-report"
+foreach ($r in $repos) { git clone -b dev "https://github.com/MarCOCO999/$r.git" }
+Rename-Item andesstay-infra infra
+```
+
+Git Bash / Linux / Mac:
 
 ```bash
 mkdir AndesStay && cd AndesStay
@@ -34,6 +52,10 @@ mv andesstay-infra infra
 ```
 
 Maven no hace falta instalarlo: cada microservicio trae su wrapper (`mvnw` / `mvnw.cmd`). La primera compilación descarga las dependencias, así que requiere internet.
+
+### Cuenta de Azure AD
+
+El login (MSAL) funciona desde cualquier computador porque la redirección es a `http://localhost:4200`, pero la cuenta con la que se ingresa tiene que pertenecer al tenant del caso **y tener asignado un App Role** (`Admin`, `Operador`, `Cliente` o `Auditor`) en la aplicación registrada. Sin rol, el login funciona pero la API responde `403`.
 
 ## Cómo levantar todo en local
 
@@ -66,10 +88,12 @@ Cada uno responde `"status":"UP"` en `http://localhost:<puerto>/actuator/health`
 Get-Content infra\db\seed-catalog.sql | docker exec -i andesstay-oracle sqlplus -s andesstay/changeit@FREEPDB1
 ```
 
-**4. Frontend** en http://localhost:4200:
+**4. Frontend** en http://localhost:4200 (`npm ci` solo la primera vez):
 
 ```powershell
-cd frontend-andesstay; npm ci; npx ng serve
+cd frontend-andesstay; npm ci
+npx ng serve          # contra el backend local (localhost:8081)
+npx ng serve -c aws   # contra el API Gateway de AWS (environment.aws.ts)
 ```
 
 | UI local | URL | Credenciales |
