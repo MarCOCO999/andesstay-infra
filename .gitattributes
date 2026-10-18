@@ -1,0 +1,5 @@
+# Los scripts se ejecutan en bash (Git Bash local o user-data en Amazon Linux): con CRLF
+# fallan ("\r: command not found"), aunque el repo se clone en Windows con core.autocrlf.
+*.sh  text eol=lf
+*.sql text eol=lf
+*.yml text eol=lf
