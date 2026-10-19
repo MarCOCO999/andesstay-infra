@@ -8,12 +8,12 @@ Alcance completo del proyecto AndesStay (caso DSY1107 – Desarrollo Cloud Nativ
 
 | Estado | Cantidad |
 |---|---|
-| ✅ Implementada | 33 |
-| 🟡 Parcial | 2 |
+| ✅ Implementada | 34 |
+| 🟡 Parcial | 1 |
 | ❌ No implementada | 2 |
 | **Total del alcance** | **37** |
 
-**Grado de implementación:** 33 ÷ 37 = **89,2 %** (solo cuentan las implementadas y operativas).
+**Grado de implementación:** 34 ÷ 37 = **91,9 %** (solo cuentan las implementadas y operativas).
 
 ## 1. Identidad y seguridad
 
@@ -82,7 +82,7 @@ Alcance completo del proyecto AndesStay (caso DSY1107 – Desarrollo Cloud Nativ
 |---|---|---|---|---|
 | 32 | Infraestructura local con Docker Compose (Oracle, RabbitMQ, Kafka + Zookeeper) | ✅ | andesstay-infra | `db/`, `mq/`, `kafka/compose.yml` · commit `c4d5b86` |
 | 33 | `.gitignore` por tecnología (Maven en el backend, Angular en el frontend) | ✅ | todos los repos | `.gitignore` en la raíz de cada repositorio |
-| 34 | Despliegue en AWS: EC2 de infraestructura, una EC2 por microservicio, API Gateway, S3, Elastic IP | 🟡 | andesstay-infra | `aws/provision.sh`, `aws/deploy-apps.sh` · commit `842b4ca`. Desplegados y operativos: los 6 microservicios previos. **Pendiente:** desplegar `ms-andesstay-rabbit-admin` en su EC2 |
+| 34 | Despliegue en AWS: EC2 de infraestructura, una EC2 por microservicio (7), API Gateway, S3, Elastic IP | ✅ | andesstay-infra | `aws/provision.sh`, `aws/deploy-apps.sh`, `aws/redeploy.sh` · commits `842b4ca`, `21b29c7`. Los 7 microservicios responden `UP`; `GET https://e94n72mnmk.execute-api.us-east-1.amazonaws.com/api/rabbit/queues/q.cmd.email` sin token responde `401` (ruta publicada y protegida) |
 | 35 | Pruebas automatizadas del backend | 🟡 | todos los microservicios | Pruebas unitarias e integración en notify, reservations y rabbit-admin (`./mvnw test`). catalog, audit, report y bff solo tienen la prueba de arranque (`contextLoads`) |
 | 36 | Clúster de Kafka con 3 nodos de Zookeeper y 3 brokers | ❌ | andesstay-infra | Hoy corre 1 Zookeeper y 1 broker (`kafka/compose.yml`). Los servicios ya leen el factor de replicación de `KAFKA_TOPIC_REPLICATION_FACTOR` |
 | 37 | Clúster de RabbitMQ de 2 nodos | ❌ | andesstay-infra | Hoy corre 1 nodo (`mq/compose.yml`) |

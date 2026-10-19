@@ -26,8 +26,10 @@ launch() {
   if [ "$(echo "$existing" | awk '{print $1}')" != "None" ]; then
     IP[$svc]=$(echo "$existing" | awk '{print $2}')
     echo "${svc} ya existe: ${existing}"
-    [ -n "$extra_env" ] && sync_env "$svc" "$(echo "$existing" | awk '{print $1}')" "$extra_env"
-    return
+    if [ -n "$extra_env" ]; then
+      sync_env "$svc" "$(echo "$existing" | awk '{print $1}')" "$extra_env"
+    fi
+    return 0
   fi
 
   local user_data
