@@ -34,7 +34,7 @@ Cada carpeta es independiente: se pueden levantar todas juntas o solo las que se
 
 ### Clonar los repos
 
-Los 9 repos tienen que quedar como **carpetas hermanas** dentro de una misma carpeta, y el de infraestructura con el nombre `infra` (los scripts de `aws/` buscan `../ms-andesstay-*` e `infra/db/`). Se clona la rama **`dev`**, que es la que tiene el código al día.
+Los 9 repos tienen que quedar como **carpetas hermanas** dentro de una misma carpeta, y el de infraestructura con el nombre `infra` (los scripts de `aws/` buscan `../ms-andesstay-*` e `infra/db/`). Se clona la rama **`main`**, que es la que tiene el código al día.
 
 PowerShell:
 
@@ -43,7 +43,7 @@ mkdir AndesStay; cd AndesStay
 $repos = "andesstay-infra", "frontend-andesstay", "ms-andesstay-bff", "ms-andesstay-reservations",
          "ms-andesstay-catalog", "ms-andesstay-notify", "ms-andesstay-audit", "ms-andesstay-report",
          "ms-andesstay-rabbit-admin"
-foreach ($r in $repos) { git clone -b dev "https://github.com/MarCOCO999/$r.git" }
+foreach ($r in $repos) { git clone -b main "https://github.com/MarCOCO999/$r.git" }
 Rename-Item andesstay-infra infra
 ```
 
@@ -53,7 +53,7 @@ Git Bash / Linux / Mac:
 mkdir AndesStay && cd AndesStay
 for r in andesstay-infra frontend-andesstay ms-andesstay-bff ms-andesstay-reservations ms-andesstay-catalog \
          ms-andesstay-notify ms-andesstay-audit ms-andesstay-report ms-andesstay-rabbit-admin; do
-  git clone -b dev https://github.com/MarCOCO999/$r.git
+  git clone -b main https://github.com/MarCOCO999/$r.git
 done
 mv andesstay-infra infra
 ```

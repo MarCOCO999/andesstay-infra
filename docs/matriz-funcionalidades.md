@@ -1,6 +1,6 @@
 # Matriz de funcionalidades — AndesStay
 
-Alcance completo del proyecto AndesStay (caso DSY1107 – Desarrollo Cloud Native I) con el estado de cada funcionalidad, el componente responsable y una evidencia verificable en los repositorios (endpoint, archivo, commit o prueba). Los commits citados están en la rama `dev` de cada repositorio.
+Alcance completo del proyecto AndesStay (caso DSY1107 – Desarrollo Cloud Native I) con el estado de cada funcionalidad, el componente responsable y una evidencia verificable en los repositorios (endpoint, archivo, commit o prueba). Los commits citados están en la rama `main` de cada repositorio.
 
 **Estados:** ✅ Implementada · 🟡 Parcial · ❌ No implementada
 
