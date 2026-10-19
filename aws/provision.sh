@@ -15,7 +15,7 @@ export AWS_DEFAULT_REGION=${AWS_DEFAULT_REGION:-us-east-1}
 # pwd -W da rutas C:/... en Git Bash (aws.exe no entiende /c/...); en Linux/Mac cae a pwd.
 SCRIPT_DIR=$(cd "$(dirname "$0")" && (pwd -W 2>/dev/null || pwd))
 ROOT=${ANDESSTAY_ROOT:-$(cd "$SCRIPT_DIR/../.." && (pwd -W 2>/dev/null || pwd))}
-SERVICES=(bff reservations catalog audit report notify)
+SERVICES=(bff reservations catalog audit report rabbit-admin notify)
 ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-http://localhost:4200}
 
 ACCOUNT=$(aws sts get-caller-identity --query Account --output text)
@@ -76,7 +76,7 @@ echo "Buckets: ${DEPLOY_BUCKET} ${IMAGES_BUCKET}"
 # --- Jars -------------------------------------------------------------------------------
 for svc in "${SERVICES[@]}"; do
   dir="$ROOT/ms-andesstay-$svc"
-  (cd "$dir" && env -u MSYS_NO_PATHCONV ./mvnw -q -DskipTests package)
+  (cd "$dir" && env -u MSYS_NO_PATHCONV ./mvnw -q -DskipTests clean package)
   aws s3 cp --only-show-errors "$dir/target/ms-andesstay-$svc-0.0.1-SNAPSHOT.jar" "s3://$DEPLOY_BUCKET/jars/ms-andesstay-$svc.jar"
   echo "jar ${svc} subido"
 done
@@ -101,11 +101,9 @@ fi
 INFRA_IP=$(aws ec2 describe-instances --instance-ids "$INFRA_ID" --query 'Reservations[0].Instances[0].PrivateIpAddress' --output text)
 echo "EC2 infra ${INFRA_ID} (${INFRA_IP})"
 
-if [ "$(instance_id andesstay-bff)" = "None" ]; then
-  INFRA_IP=$INFRA_IP APP_SG=$APP_SG SUBNET=$SUBNET ALLOWED_ORIGINS=$ALLOWED_ORIGINS bash "$SCRIPT_DIR/deploy-apps.sh"
-else
-  echo "Las EC2 de aplicacion ya existen; para actualizar un servicio usar ./redeploy.sh <servicio>"
-fi
+# Lanza solo las EC2 de aplicacion que falten; las existentes se reutilizan (para actualizar
+# el codigo de un servicio que ya corre: ./redeploy.sh <servicio>).
+INFRA_IP=$INFRA_IP APP_SG=$APP_SG SUBNET=$SUBNET ALLOWED_ORIGINS=$ALLOWED_ORIGINS bash "$SCRIPT_DIR/deploy-apps.sh"
 BFF_ID=$(instance_id andesstay-bff)
 
 # --- Elastic IP del BFF (la IP publica no cambia al detener/encender el lab) ------------
