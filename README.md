@@ -7,7 +7,7 @@ Infraestructura compartida del proyecto **AndesStay** (caso DSY1107 – Desarrol
 | Carpeta | Qué levanta | Puertos |
 |---|---|---|
 | `db/` | Oracle Database Free 23ai (imagen `gvenzl/oracle-free:23-slim`), con el PDB `FREEPDB1` y un usuario de aplicación ya creados | `1521` |
-| `mq/` | RabbitMQ de un solo nodo con plugin de management | `5672` (AMQP), `15672` (UI) |
+| `mq/` | Clúster RabbitMQ de 2 nodos con plugin de management, más `rabbitmq-init`, que aplica la política de réplica de colas. Ver [Clúster RabbitMQ](#clúster-rabbitmq) | `5672`/`5673` (AMQP), `15672`/`15673` (UI) |
 | `kafka/` | Clúster Kafka: 3 nodos Zookeeper + 3 brokers (sin KRaft, tal como pide el caso), creación de los tópicos del sistema (`kafka-init`) y Kafka UI. Ver [Diseño de Kafka](#diseño-de-kafka) | `2181`–`2183`, `9092`–`9094`, `8089` (UI) |
 
 Cada carpeta es independiente: se pueden levantar todas juntas o solo las que se necesiten para trabajar en un microservicio puntual.
@@ -30,7 +30,7 @@ Cada carpeta es independiente: se pueden levantar todas juntas o solo las que se
 
 **Hardware:** se recomiendan **16 GB de RAM** en el equipo. Oracle, el clúster Kafka (~3,5 GB), RabbitMQ y los 8 microservicios juntos ocupan bastante memoria (en Windows, Docker Desktop corre sobre WSL2 y toma la RAM que necesita del total del equipo).
 
-**Puertos que deben estar libres:** `1521`, `5672`, `15672`, `2181`–`2183`, `9092`–`9094`, `8089` (infraestructura), `8081`–`8087`, `8090` (microservicios) y `4200` (frontend).
+**Puertos que deben estar libres:** `1521`, `5672`–`5673`, `15672`–`15673`, `2181`–`2183`, `9092`–`9094`, `8089` (infraestructura), `8081`–`8087`, `8090` (microservicios) y `4200` (frontend).
 
 ### Clonar los repos
 
@@ -108,7 +108,7 @@ npx ng serve -c aws   # contra el API Gateway de AWS (environment.aws.ts)
 | UI local | URL | Credenciales |
 |---|---|---|
 | Frontend | http://localhost:4200 | cuenta de Azure AD del caso |
-| RabbitMQ | http://localhost:15672 | `guest` / `guest` |
+| RabbitMQ (nodo 1 / nodo 2) | http://localhost:15672 / http://localhost:15673 | `guest` / `guest` |
 | Kafka UI | http://localhost:8089 | — |
 
 Credenciales por defecto (solo para desarrollo local, nunca usar en un ambiente real): Oracle `andesstay` / `changeit`, RabbitMQ `guest` / `guest`.
@@ -116,6 +116,15 @@ Credenciales por defecto (solo para desarrollo local, nunca usar en un ambiente 
 **Subida de fotos en local:** es lo único que depende de AWS. `catalog` firma la URL de subida con las credenciales de AWS del computador y contra el bucket de `S3_IMAGES_BUCKET`, así que para probarla hay que tener credenciales del lab vigentes y arrancar catalog con `$env:S3_IMAGES_BUCKET="andesstay-images-<account-id>"`. Todo lo demás funciona sin AWS.
 
 Para apagar: `Ctrl+C` en cada microservicio y `docker compose -f infra\<db|mq|kafka>\compose.yml down` (con `-v` se borran también los datos).
+
+## Clúster RabbitMQ
+
+RabbitMQ transporta los **comandos** hacia `ms-andesstay-notify`: 3 colas (`q.cmd.email`, `q.cmd.housekeeping` y `q.cmd.voucher`), cada una con su cola de reintento (`.retry`) y su DLQ (`.dlq`). Los exchanges son `cmd.direct` (direct), `cmd.topic` (topic), `cmd.retry` y `cmd.dead.dlx` (dead-letter).
+
+- **2 nodos** (`rabbit@andesstay-rabbitmq` y `rabbit@andesstay-rabbitmq-2`) que comparten la Erlang cookie. El clúster se forma solo con *peer discovery* `classic_config`: el nodo 2 arranca cuando el nodo 1 está sano y se une. Exchanges, colas, usuarios y políticas pertenecen al clúster y se administran desde cualquiera de los dos nodos.
+- **Réplica de colas:** `rabbitmq-init` aplica la política `ha-all` (`^q\.` → `ha-mode: all`, sincronización automática). Cada cola tiene un líder en un nodo y una réplica en el otro. Si cae un nodo, la réplica asume y las colas siguen atendiendo sin perder los mensajes ya encolados.
+- **Clientes:** reservations, notify y rabbit-admin reciben ambas direcciones (`SPRING_RABBITMQ_ADDRESSES=<ip>:5672,<ip>:5673`) y se reconectan solos al nodo que siga vivo.
+- **Por qué colas clásicas replicadas y no *quorum queues*:** una quorum queue necesita mayoría (2 de 2 con dos nodos), así que no toleraría la caída de ninguno. Con 2 nodos, la réplica clásica es la opción que sí da tolerancia a fallos. Con un tercer nodo, lo recomendado sería migrar a quorum queues, porque la réplica clásica está deprecada desde RabbitMQ 3.13.
 
 ## Diseño de Kafka
 
@@ -160,7 +169,7 @@ Para la entrega del caso, esta misma infraestructura corre en una **EC2 de infra
 Navegador → API Gateway HTTP ─ /api/** → BFF (EC2 + Elastic IP :8081) → reservations | catalog | audit | report | rabbit-admin | kafka-admin
                           └─ resto ──→ S3 andesstay-web (frontend Angular)
                                                                                     │
-          EC2 infra: Oracle :1521 · RabbitMQ :5672 · Kafka :9092-9094 (3 brokers) ◄──┘ (+ notify)
+          EC2 infra: Oracle :1521 · RabbitMQ :5672-5673 (2 nodos) · Kafka :9092-9094 (3 brokers) ◄──┘ (+ notify)
 ```
 
 ### Credenciales del lab
@@ -180,8 +189,10 @@ Se corren con **bash** (en Windows, desde Git Bash). Todos usan el rol `LabInsta
 | `provision.sh` | Crea todo desde cero: security groups, buckets S3 (jars y fotos, con CORS y lectura pública solo de `units/*`), EC2 de infraestructura, una EC2 por microservicio, Elastic IP del BFF y API Gateway. Compila y sube los jars. Si un recurso ya existe lo reutiliza, así que se puede volver a correr. Al terminar imprime la URL del API Gateway. |
 | `redeploy.sh <servicio> ...` | Compila el/los microservicio(s), sube el jar y lo reinicia en su EC2 vía SSM. Ej: `./redeploy.sh catalog reservations` |
 | `seed.sh` | Carga las unidades de ejemplo en el Oracle de AWS (idempotente). |
+| `rabbit-cluster.sh` | Sube `mq/compose.yml` al bucket y (re)levanta el clúster RabbitMQ de 2 nodos en la EC2 de infraestructura vía SSM (con `rabbit-cluster-ec2.sh`), con el mismo compose que en local. Después configura reservations, notify y rabbit-admin con ambas direcciones (`SPRING_RABBITMQ_ADDRESSES`). También migra una EC2 creada con la versión anterior de un solo nodo. |
 | `kafka-cluster.sh` | Sube `kafka/` (compose y scripts) al bucket y (re)levanta el clúster Kafka de 3 brokers en la EC2 de infraestructura vía SSM, con el mismo `kafka/compose.yml` que en local. También migra una EC2 creada con la versión anterior de un solo broker. |
 | `infra-user-data.sh` | User-data de la EC2 de infraestructura (lo usa `provision.sh`); el clúster Kafka lo levanta con `kafka-cluster-ec2.sh`. |
+| `api-jwt.sh` | Agrega al API Gateway un **JWT Authorizer** de Microsoft Entra ID: `/api/**` solo llega al BFF con un access token válido (firma, issuer, audience y vigencia), y si no, el gateway responde `401` sin tocar el backend. `OPTIONS /api/**` queda libre para los preflight CORS. |
 | `frontend.sh` | Compila el frontend (`ng build`), lo sube a un bucket S3 con website hosting y lo publica en el **mismo API Gateway** (`/api/**` → BFF, el resto → S3), con HTTPS. CloudFront no está disponible en el Learner Lab. También agrega ese origen al CORS del BFF y del bucket de fotos. Se vuelve a correr para publicar una versión nueva del frontend. |
 | `deploy-apps.sh` | Lanza las 8 EC2 de aplicación que falten y actualiza la configuración de las que ya existen (lo usa `provision.sh`). |
 
@@ -191,13 +202,15 @@ Se corren con **bash** (en Windows, desde Git Bash). Todos usan el rol `LabInsta
 cd infra/aws
 ./provision.sh
 ./seed.sh        # unos minutos después, cuando catalog ya arrancó
+./frontend.sh    # frontend en S3 detrás del API Gateway (requiere Node.js 22)
+./api-jwt.sh     # JWT Authorizer de Entra ID en /api/**
 ```
 
-Después, publicar el frontend con `./frontend.sh` (requiere Node.js 22) y registrar la URL del API Gateway que imprime, más `<URL>/login`, como redirect URI de la plataforma **Single-page application** en la app registration de Azure AD. El frontend queda en esa URL, sin instalar nada en el computador que lo usa.
+Después, registrar la URL del API Gateway que imprime, más `<URL>/login`, como redirect URI de la plataforma **Single-page application** en la app registration de Azure AD. El frontend queda en esa URL, sin instalar nada en el computador que lo usa.
 
 Para desarrollar el frontend en local contra el backend de AWS, poner la misma URL en `frontend-andesstay/src/environments/environment.aws.ts` y correr `npx ng serve -c aws` (http://localhost:4200).
 
-**Sesiones siguientes del mismo lab:** no hay que desplegar nada. Al iniciar el lab las EC2 se encienden solas, y cada servicio arranca por sí mismo (systemd en las EC2 de aplicación, `restart: unless-stopped` en los contenedores). Las IP privadas no cambian y el BFF tiene Elastic IP, así que el API Gateway sigue funcionando. Lo único que cambia es la IP pública de la EC2 de infraestructura (UIs de RabbitMQ `:15672`, usuario `andesstay` / `changeit`, y Kafka `:8089`):
+**Sesiones siguientes del mismo lab:** no hay que desplegar nada. Al iniciar el lab las EC2 se encienden solas, y cada servicio arranca por sí mismo (systemd en las EC2 de aplicación, `restart: unless-stopped` en los contenedores). Las IP privadas no cambian y el BFF tiene Elastic IP, así que el API Gateway sigue funcionando. Lo único que cambia es la IP pública de la EC2 de infraestructura (UIs de RabbitMQ `:15672` y `:15673`, usuario `andesstay` / `changeit`, y Kafka `:8089`):
 
 ```bash
 aws ec2 describe-instances --filters Name=tag:Name,Values=andesstay-infra \

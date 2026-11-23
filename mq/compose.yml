@@ -1,26 +1,93 @@
 name: andesstay-mq
 
-# RabbitMQ de un solo nodo para desarrollo local. El caso pide un cluster de 2 nodos
-# para las evaluaciones en EC2 (ver seccion 7 del caso); ese compose se arma aparte
-# cuando toque desplegar, no hace falta para probar los microservicios en local.
+# Cluster RabbitMQ de 2 nodos (el mismo compose en local y en la EC2 de infraestructura).
+#
+# - Ambos nodos comparten la Erlang cookie, que es lo que les permite autenticarse entre si.
+# - El cluster se forma solo con peer discovery "classic_config" (rabbitmq.conf): el nodo 2
+#   arranca cuando el nodo 1 esta sano, lo encuentra en la lista y se une. Exchanges, colas,
+#   usuarios y politicas son del cluster: se ven y se usan desde cualquiera de los dos nodos.
+# - rabbitmq-init espera a que los dos nodos esten en el cluster y aplica la politica "ha-all",
+#   que replica las colas de la aplicacion (q.*) en ambos nodos: si cae uno, el otro sigue
+#   atendiendo las colas sin perder los mensajes ya encolados.
+# - Los microservicios reciben ambas direcciones (spring.rabbitmq.addresses) y se reconectan
+#   al nodo que siga vivo.
+x-rabbitmq: &rabbitmq
+  image: rabbitmq:3.13-management
+  restart: unless-stopped
+  environment:
+    RABBITMQ_DEFAULT_USER: ${RABBITMQ_USERNAME:-guest}
+    RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-guest}
+    RABBITMQ_ERLANG_COOKIE: ${RABBITMQ_ERLANG_COOKIE:-andesstay-rabbitmq-cluster-cookie}
+  configs:
+    - source: rabbitmq-conf
+      target: /etc/rabbitmq/conf.d/20-cluster.conf
+  healthcheck:
+    test: ["CMD", "rabbitmq-diagnostics", "-q", "check_running"]
+    interval: 10s
+    timeout: 10s
+    retries: 12
+
 services:
   rabbitmq:
-    image: rabbitmq:3.13-management
+    <<: *rabbitmq
     container_name: andesstay-rabbitmq
     hostname: andesstay-rabbitmq
-    environment:
-      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USERNAME:-guest}
-      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-guest}
     ports:
-      - "5672:5672"   # AMQP
-      - "15672:15672" # Management UI (http://localhost:15672)
+      - "5672:5672"   # AMQP nodo 1
+      - "15672:15672" # Management UI nodo 1 (http://localhost:15672)
     volumes:
-      - rabbitmq-data:/var/lib/rabbitmq
-    healthcheck:
-      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
+      - rabbitmq-1-data:/var/lib/rabbitmq
+
+  rabbitmq-2:
+    <<: *rabbitmq
+    container_name: andesstay-rabbitmq-2
+    hostname: andesstay-rabbitmq-2
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    ports:
+      - "5673:5672"   # AMQP nodo 2
+      - "15673:15672" # Management UI nodo 2 (http://localhost:15673)
+    volumes:
+      - rabbitmq-2-data:/var/lib/rabbitmq
+
+  rabbitmq-init:
+    image: rabbitmq:3.13-management
+    container_name: andesstay-rabbitmq-init
+    restart: "no"
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      rabbitmq-2:
+        condition: service_healthy
+    environment:
+      RABBITMQ_ERLANG_COOKIE: ${RABBITMQ_ERLANG_COOKIE:-andesstay-rabbitmq-cluster-cookie}
+    entrypoint: ["bash", "-c"]
+    command:
+      - |
+        set -e
+        N1=rabbit@andesstay-rabbitmq
+        N2=rabbit@andesstay-rabbitmq-2
+        for i in $$(seq 1 30); do
+          rabbitmqctl -q -n "$$N1" cluster_status --formatter json | grep -q "$$N2" && break
+          echo "Esperando a que $$N2 se una al cluster..."; sleep 5
+        done
+        rabbitmqctl -q -n "$$N1" cluster_status --formatter json | grep -q "$$N2" || { echo "$$N2 no se unio al cluster"; exit 1; }
+        rabbitmqctl -n "$$N1" set_policy --apply-to queues --priority 0 ha-all '^q\.' \
+          '{"ha-mode":"all","ha-sync-mode":"automatic"}'
+        rabbitmqctl -n "$$N1" cluster_status | sed -n '/Running Nodes/,/Versions/p'
+        echo "Cluster listo."
+
+configs:
+  rabbitmq-conf:
+    content: |
+      cluster_name = andesstay-rabbit
+      cluster_formation.peer_discovery_backend = classic_config
+      cluster_formation.classic_config.nodes.1 = rabbit@andesstay-rabbitmq
+      cluster_formation.classic_config.nodes.2 = rabbit@andesstay-rabbitmq-2
+      # Nuevas colas repartidas entre los nodos en vez de concentrarse en el que recibe la declaracion.
+      queue_leader_locator = balanced
 
 volumes:
-  rabbitmq-data:
+  rabbitmq-1-data:
+  rabbitmq-2-data:

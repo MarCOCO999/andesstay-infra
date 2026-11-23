@@ -1,8 +1,9 @@
 #!/bin/bash
 # User-data de la EC2 de infraestructura (Amazon Linux 2023): instala Docker y levanta
-# Oracle Free y RabbitMQ con la misma configuracion que los compose de db/ y mq/, y el cluster
-# Kafka (3 Zookeeper + 3 brokers + Kafka UI) con el mismo kafka/compose.yml que en local, via
-# kafka-cluster-ec2.sh (provision.sh lo sube antes al bucket de despliegue). La unica
+# Oracle Free con la misma configuracion que db/compose.yml, el cluster RabbitMQ de 2 nodos
+# (mq/compose.yml, via rabbit-cluster-ec2.sh) y el cluster Kafka (3 Zookeeper + 3 brokers +
+# Kafka UI) con el mismo kafka/compose.yml que en local, via kafka-cluster-ec2.sh (provision.sh
+# sube ambos compose y scripts al bucket de despliegue antes de crear la EC2). La unica
 # diferencia es el listener anunciado de Kafka, que usa la IP privada de esta instancia para
 # que las EC2 de aplicacion puedan conectarse.
 set -euxo pipefail
@@ -32,24 +33,15 @@ services:
       APP_USER_PASSWORD: changeit
     volumes: [oracle-data:/opt/oracle/oradata]
 
-  rabbitmq:
-    image: rabbitmq:3.13-management
-    container_name: andesstay-rabbitmq
-    hostname: andesstay-rabbitmq
-    restart: unless-stopped
-    environment:
-      RABBITMQ_DEFAULT_USER: andesstay
-      RABBITMQ_DEFAULT_PASS: changeit
-    ports: ["5672:5672", "15672:15672"]
-    volumes: [rabbitmq-data:/var/lib/rabbitmq]
-
 volumes:
   oracle-data:
-  rabbitmq-data:
 EOF
 
 docker compose -f /opt/andesstay/compose.yml up -d
 
 ACCOUNT=$(aws sts get-caller-identity --query Account --output text)
+# Cluster RabbitMQ de 2 nodos (infra/mq/compose.yml) y cluster Kafka (infra/kafka/compose.yml).
+aws s3 cp "s3://andesstay-deploy-${ACCOUNT}/infra/rabbit-cluster-ec2.sh" /opt/andesstay/rabbit-cluster-ec2.sh
+bash /opt/andesstay/rabbit-cluster-ec2.sh
 aws s3 cp "s3://andesstay-deploy-${ACCOUNT}/infra/kafka-cluster-ec2.sh" /opt/andesstay/kafka-cluster-ec2.sh
 bash /opt/andesstay/kafka-cluster-ec2.sh

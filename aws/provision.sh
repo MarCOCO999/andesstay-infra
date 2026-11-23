@@ -52,9 +52,9 @@ if [ "$INFRA_SG" = "None" ]; then
   aws ec2 authorize-security-group-ingress --group-id "$INFRA_SG" --ip-permissions \
     "IpProtocol=tcp,FromPort=22,ToPort=22,IpRanges=[{CidrIp=0.0.0.0/0}]" \
     "IpProtocol=tcp,FromPort=1521,ToPort=1521,UserIdGroupPairs=[{GroupId=$APP_SG}]" \
-    "IpProtocol=tcp,FromPort=5672,ToPort=5672,UserIdGroupPairs=[{GroupId=$APP_SG}]" \
+    "IpProtocol=tcp,FromPort=5672,ToPort=5673,UserIdGroupPairs=[{GroupId=$APP_SG,Description=RabbitMQ 2 nodos}]" \
     "IpProtocol=tcp,FromPort=9092,ToPort=9094,UserIdGroupPairs=[{GroupId=$APP_SG,Description=Kafka 3 brokers}]" \
-    "IpProtocol=tcp,FromPort=15672,ToPort=15672,IpRanges=[{CidrIp=0.0.0.0/0,Description=RabbitMQ UI}]" \
+    "IpProtocol=tcp,FromPort=15672,ToPort=15673,IpRanges=[{CidrIp=0.0.0.0/0,Description=RabbitMQ UI 2 nodos}]" \
     "IpProtocol=tcp,FromPort=8089,ToPort=8089,IpRanges=[{CidrIp=0.0.0.0/0,Description=Kafka UI}]" >/dev/null
 fi
 echo "Security groups: app=${APP_SG} infra=${INFRA_SG}"
@@ -81,7 +81,8 @@ for svc in "${SERVICES[@]}"; do
   echo "jar ${svc} subido"
 done
 aws s3 cp --only-show-errors "$ROOT/infra/db/seed-catalog.sql" "s3://$DEPLOY_BUCKET/sql/seed-catalog.sql"
-# compose y scripts del cluster Kafka: el user-data de la EC2 de infraestructura los descarga.
+# compose y scripts de los clusters RabbitMQ y Kafka: el user-data de la EC2 de infraestructura los descarga.
+bash "$SCRIPT_DIR/rabbit-cluster.sh" --upload-only
 bash "$SCRIPT_DIR/kafka-cluster.sh" --upload-only
 
 # --- EC2 --------------------------------------------------------------------------------
@@ -147,7 +148,8 @@ cat <<EOF
 Listo. Los servicios tardan unos minutos en arrancar la primera vez.
   API Gateway : ${API_URL}   (poner esta URL en frontend-andesstay/src/environments/environment.aws.ts)
   Frontend    : ./frontend.sh  lo publica en ${API_URL} (registrar esa URL como redirect URI SPA en Azure AD)
-  RabbitMQ UI : http://${INFRA_PUBLIC}:15672  (andesstay / changeit)
+  JWT         : ./api-jwt.sh   agrega el JWT Authorizer de Entra ID a /api/** (despues de frontend.sh)
+  RabbitMQ UI : http://${INFRA_PUBLIC}:15672 y :15673 (nodos 1 y 2, andesstay / changeit)
   Kafka UI    : http://${INFRA_PUBLIC}:8089
 Datos de ejemplo del catalogo (una vez que catalog haya arrancado):  ./seed.sh
 EOF
