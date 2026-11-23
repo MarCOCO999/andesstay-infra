@@ -4,7 +4,7 @@
 # para el BFF y el API Gateway HTTP. Si un recurso ya existe (por nombre/tag) lo reutiliza,
 # asi que se puede volver a correr sin duplicar nada.
 #
-# Requisitos: AWS CLI con credenciales del lab, Java 21+ (para compilar los jars) y los repos
+# Requisitos: AWS CLI con credenciales del lab, Java 25+ (para compilar los jars) y los repos
 # ms-andesstay-* clonados como carpetas hermanas de este repo. En Windows, correrlo desde Git Bash.
 #
 # Uso: ./provision.sh
@@ -15,7 +15,7 @@ export AWS_DEFAULT_REGION=${AWS_DEFAULT_REGION:-us-east-1}
 # pwd -W da rutas C:/... en Git Bash (aws.exe no entiende /c/...); en Linux/Mac cae a pwd.
 SCRIPT_DIR=$(cd "$(dirname "$0")" && (pwd -W 2>/dev/null || pwd))
 ROOT=${ANDESSTAY_ROOT:-$(cd "$SCRIPT_DIR/../.." && (pwd -W 2>/dev/null || pwd))}
-SERVICES=(bff reservations catalog audit report rabbit-admin notify)
+SERVICES=(bff reservations catalog audit report rabbit-admin kafka-admin notify)
 ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-http://localhost:4200}
 
 ACCOUNT=$(aws sts get-caller-identity --query Account --output text)
@@ -53,7 +53,7 @@ if [ "$INFRA_SG" = "None" ]; then
     "IpProtocol=tcp,FromPort=22,ToPort=22,IpRanges=[{CidrIp=0.0.0.0/0}]" \
     "IpProtocol=tcp,FromPort=1521,ToPort=1521,UserIdGroupPairs=[{GroupId=$APP_SG}]" \
     "IpProtocol=tcp,FromPort=5672,ToPort=5672,UserIdGroupPairs=[{GroupId=$APP_SG}]" \
-    "IpProtocol=tcp,FromPort=9092,ToPort=9092,UserIdGroupPairs=[{GroupId=$APP_SG}]" \
+    "IpProtocol=tcp,FromPort=9092,ToPort=9094,UserIdGroupPairs=[{GroupId=$APP_SG,Description=Kafka 3 brokers}]" \
     "IpProtocol=tcp,FromPort=15672,ToPort=15672,IpRanges=[{CidrIp=0.0.0.0/0,Description=RabbitMQ UI}]" \
     "IpProtocol=tcp,FromPort=8089,ToPort=8089,IpRanges=[{CidrIp=0.0.0.0/0,Description=Kafka UI}]" >/dev/null
 fi
@@ -81,6 +81,8 @@ for svc in "${SERVICES[@]}"; do
   echo "jar ${svc} subido"
 done
 aws s3 cp --only-show-errors "$ROOT/infra/db/seed-catalog.sql" "s3://$DEPLOY_BUCKET/sql/seed-catalog.sql"
+# compose y scripts del cluster Kafka: el user-data de la EC2 de infraestructura los descarga.
+bash "$SCRIPT_DIR/kafka-cluster.sh" --upload-only
 
 # --- EC2 --------------------------------------------------------------------------------
 instance_id() {

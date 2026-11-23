@@ -14,14 +14,18 @@ SCRIPT_DIR=$(cd "$(dirname "$0")" && (pwd -W 2>/dev/null || pwd))
 ROOT=${ANDESSTAY_ROOT:-$(cd "$SCRIPT_DIR/../.." && (pwd -W 2>/dev/null || pwd))}
 ACCOUNT=$(aws sts get-caller-identity --query Account --output text)
 DEPLOY_BUCKET="andesstay-deploy-${ACCOUNT}"
-declare -A PORT=([bff]=8081 [reservations]=8082 [catalog]=8083 [audit]=8084 [report]=8085 [rabbit-admin]=8086 [notify]=8090)
+# Las EC2 corren Amazon Corretto 21, pero los pom.xml declaran java.version 25: un jar
+# compilado para 25 no arranca alli (UnsupportedClassVersionError). Se compila para 21
+# (requiere un JDK >= 21 local); subir este valor solo si las EC2 pasan a un JDK mas nuevo.
+TARGET_JAVA=${TARGET_JAVA:-21}
+declare -A PORT=([bff]=8081 [reservations]=8082 [catalog]=8083 [audit]=8084 [report]=8085 [rabbit-admin]=8086 [kafka-admin]=8087 [notify]=8090)
 
 for svc in "$@"; do
   [ -n "${PORT[$svc]:-}" ] || { echo "Servicio desconocido: $svc"; exit 1; }
   dir="$ROOT/ms-andesstay-$svc"
 
-  echo "[$svc] compilando..."
-  (cd "$dir" && env -u MSYS_NO_PATHCONV ./mvnw -q -DskipTests clean package)
+  echo "[$svc] compilando (bytecode Java $TARGET_JAVA)..."
+  (cd "$dir" && env -u MSYS_NO_PATHCONV ./mvnw -q -DskipTests -Djava.version="$TARGET_JAVA" clean package)
   aws s3 cp --only-show-errors "$dir/target/ms-andesstay-$svc-0.0.1-SNAPSHOT.jar" "s3://$DEPLOY_BUCKET/jars/ms-andesstay-$svc.jar"
 
   id=$(aws ec2 describe-instances --filters Name=tag:Name,Values="andesstay-$svc" Name=instance-state-name,Values=running \

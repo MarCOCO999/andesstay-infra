@@ -8,7 +8,7 @@ Infraestructura compartida del proyecto **AndesStay** (caso DSY1107 – Desarrol
 |---|---|---|
 | `db/` | Oracle Database Free 23ai (imagen `gvenzl/oracle-free:23-slim`), con el PDB `FREEPDB1` y un usuario de aplicación ya creados | `1521` |
 | `mq/` | RabbitMQ de un solo nodo con plugin de management | `5672` (AMQP), `15672` (UI) |
-| `kafka/` | Zookeeper + 1 broker Kafka (sin KRaft, tal como pide el caso) + Kafka UI | `2181`, `9092`, `8089` (UI) |
+| `kafka/` | Clúster Kafka: 3 nodos Zookeeper + 3 brokers (sin KRaft, tal como pide el caso), creación de los tópicos del sistema (`kafka-init`) y Kafka UI. Ver [Diseño de Kafka](#diseño-de-kafka) | `2181`–`2183`, `9092`–`9094`, `8089` (UI) |
 
 Cada carpeta es independiente: se pueden levantar todas juntas o solo las que se necesiten para trabajar en un microservicio puntual.
 
@@ -28,9 +28,9 @@ Cada carpeta es independiente: se pueden levantar todas juntas o solo las que se
 | Node.js + npm | Frontend Angular | Node 22 |
 | AWS CLI v2 | Solo para desplegar o administrar AWS | 2.x |
 
-**Hardware:** se recomiendan **16 GB de RAM** en el equipo. Oracle, Kafka, RabbitMQ y los 7 microservicios juntos ocupan bastante memoria (en Windows, Docker Desktop corre sobre WSL2 y toma la RAM que necesita del total del equipo).
+**Hardware:** se recomiendan **16 GB de RAM** en el equipo. Oracle, el clúster Kafka (~3,5 GB), RabbitMQ y los 8 microservicios juntos ocupan bastante memoria (en Windows, Docker Desktop corre sobre WSL2 y toma la RAM que necesita del total del equipo).
 
-**Puertos que deben estar libres:** `1521`, `5672`, `15672`, `2181`, `9092`, `8089` (infraestructura), `8081`–`8086`, `8090` (microservicios) y `4200` (frontend).
+**Puertos que deben estar libres:** `1521`, `5672`, `15672`, `2181`–`2183`, `9092`–`9094`, `8089` (infraestructura), `8081`–`8087`, `8090` (microservicios) y `4200` (frontend).
 
 ### Clonar los repos
 
@@ -68,7 +68,7 @@ El login (MSAL) funciona desde cualquier computador porque la redirección es a 
 
 No requiere ninguna credencial de AWS. Comandos para PowerShell, desde la carpeta `AndesStay`:
 
-**1. Infraestructura** (Docker Desktop abierto). Oracle tarda 1–3 minutos en quedar `(healthy)` en `docker ps`.
+**1. Infraestructura** (Docker Desktop abierto). Oracle tarda 1–3 minutos en quedar `(healthy)` en `docker ps`. El compose de Kafka espera a que los 3 brokers estén sanos, crea los tópicos (`andesstay-kafka-init` termina con `Topicos listos.` en su log) y levanta Kafka UI.
 
 ```powershell
 docker compose -f infra\db\compose.yml up -d
@@ -85,6 +85,7 @@ cd ms-andesstay-notify;       .\mvnw.cmd spring-boot:run   # 8090
 cd ms-andesstay-audit;        .\mvnw.cmd spring-boot:run   # 8084
 cd ms-andesstay-report;       .\mvnw.cmd spring-boot:run   # 8085
 cd ms-andesstay-rabbit-admin; .\mvnw.cmd spring-boot:run   # 8086
+cd ms-andesstay-kafka-admin;  .\mvnw.cmd spring-boot:run   # 8087
 cd ms-andesstay-bff;          .\mvnw.cmd spring-boot:run   # 8081
 ```
 
@@ -116,14 +117,49 @@ Credenciales por defecto (solo para desarrollo local, nunca usar en un ambiente 
 
 Para apagar: `Ctrl+C` en cada microservicio y `docker compose -f infra\<db|mq|kafka>\compose.yml down` (con `-v` se borran también los datos).
 
+## Diseño de Kafka
+
+Kafka transporta los **eventos** del dominio (algo que ya ocurrió y que varios servicios quieren conocer, cada uno a su ritmo); RabbitMQ sigue a cargo de los **comandos** hacia `ms-andesstay-notify` (una tarea para un único destinatario, con reintento y DLQ por cola). Kafka se agregó sin tocar las integraciones de RabbitMQ: `ms-andesstay-reservations` publica en ambos desde clases separadas (`messaging/kafka` y `messaging/rabbit`).
+
+### Clúster
+
+3 nodos Zookeeper (quórum de 2) y 3 brokers. Los tópicos del sistema usan **factor de replicación 3** y **`min.insync.replicas` 2**, y los productores escriben con `acks=all` e idempotencia: una escritura se confirma cuando al menos 2 réplicas la tienen, así que el clúster sigue aceptando escrituras y lecturas con un broker caído sin perder eventos confirmados. La creación automática de tópicos está desactivada: cada tópico se crea de forma explícita con su configuración.
+
+### Tópicos
+
+| Tópico | Productor | Consumidores (consumer group) | Particiones | Limpieza / retención | Por qué |
+|---|---|---|---|---|---|
+| `reservations.events` | reservations | audit (`ms-andesstay-audit`), report (`ms-andesstay-report`) | 3 | `delete`, 7 días | Fuente de verdad de los cambios de estado. Key = `reservationId`: los eventos de una reserva van a la misma partición y se procesan en orden. 7 días alcanzan para que un consumidor caído se ponga al día. |
+| `audit.timeline` | audit | report (`ms-andesstay-report-snapshots`) | 3 | `compact` (segmentos de 1 h, tombstones 1 día) | Último estado auditado de cada reserva. Al ser compactado por `reservationId`, un consumidor nuevo reconstruye el estado actual de todas las reservas sin recorrer el historial completo (que ya está en Oracle). |
+| `reservations.events.DLT` | audit, report | monitor de audit (`ms-andesstay-audit-dlt-monitor`) | 1 | `delete`, 14 días | Eventos que no se pudieron procesar. Bajo volumen (1 partición, orden de llegada) y retención mayor para investigarlos y reprocesarlos. |
+| `audit.timeline.DLT` | report | monitor de report (`ms-andesstay-report-dlt-monitor`) | 1 | `delete`, 14 días | Ídem para el timeline. |
+
+La configuración está en tres lugares coherentes entre sí: el `application.yml` del servicio **dueño** (productor) de cada tópico (`andesstay.kafka.topics`, que Spring aplica al arrancar), `kafka/scripts/create-topics.sh` (lo corre `kafka-init` al levantar el clúster) y, para cambios en caliente, `ms-andesstay-kafka-admin`.
+
+### Consumer groups
+
+- **Pub/sub entre servicios:** audit y report usan grupos distintos sobre `reservations.events`, así que **cada uno recibe todos los eventos** y avanza a su propio ritmo; si report se cae, audit no se atrasa.
+- **Balanceo dentro de un servicio:** cada listener corre con 3 hilos (1 por partición). Si se levanta otra instancia del mismo servicio, comparte el grupo y Kafka reparte las particiones entre ambas (rebalanceo cooperativo: solo se mueven las particiones necesarias).
+- **Un grupo por flujo:** report consume `reservations.events` y `audit.timeline` con grupos distintos, de modo que cada flujo confirma sus offsets por separado y el snapshot se puede reconstruir reseteando solo su grupo.
+- **Monitores de DLT** en grupos propios, para que leer los DLT no compita con el procesamiento normal.
+
+### Administración
+
+| Herramienta | Para qué |
+|---|---|
+| `ms-andesstay-kafka-admin` (`/api/kafka/**`, rol Admin) | Clúster, tópicos (crear, configurar, aumentar particiones, eliminar) y consumer groups (lag, reset de offsets, eliminar), con protección de los tópicos y grupos del sistema |
+| Kafka UI (`:8089`) | Inspección visual de brokers, tópicos, mensajes y consumer groups |
+| `kafka/scripts/kafka-ops.sh` | Las mismas operaciones por consola (`topics`, `describe`, `set-config`, `partitions`, `groups`, `group`, `reset`, `peek`) |
+| `kafka/scripts/create-topics.sh` | Crea o reajusta los tópicos del sistema; idempotente (`docker compose -f infra/kafka/compose.yml run --rm kafka-init`) |
+
 ## Despliegue en AWS (AWS Academy Learner Lab)
 
-Para la entrega del caso, esta misma infraestructura corre en una **EC2 de infraestructura** (Oracle + RabbitMQ + Kafka/Zookeeper vía Docker, la misma configuración que estos `compose.yml`), separada de las EC2 de aplicación (una por microservicio: BFF, reservations, catalog, notify, audit, report, rabbit-admin). Un **API Gateway** HTTP API queda al frente del BFF como única puerta de entrada pública.
+Para la entrega del caso, esta misma infraestructura corre en una **EC2 de infraestructura** (Oracle + RabbitMQ + el clúster Kafka de 3 brokers vía Docker, la misma configuración que estos `compose.yml`), separada de las EC2 de aplicación (una por microservicio: BFF, reservations, catalog, notify, audit, report, rabbit-admin, kafka-admin). Un **API Gateway** HTTP API queda al frente del BFF como única puerta de entrada pública.
 
 ```
-Angular (localhost:4200) → API Gateway HTTP → BFF (EC2 + Elastic IP :8081) → reservations | catalog | audit | report
+Angular (localhost:4200) → API Gateway HTTP → BFF (EC2 + Elastic IP :8081) → reservations | catalog | audit | report | rabbit-admin | kafka-admin
                                                                                     │
-                       EC2 infra: Oracle :1521 · RabbitMQ :5672 · Kafka :9092 ◄─────┘ (+ notify)
+          EC2 infra: Oracle :1521 · RabbitMQ :5672 · Kafka :9092-9094 (3 brokers) ◄──┘ (+ notify)
 ```
 
 ### Credenciales del lab
@@ -143,8 +179,9 @@ Se corren con **bash** (en Windows, desde Git Bash). Todos usan el rol `LabInsta
 | `provision.sh` | Crea todo desde cero: security groups, buckets S3 (jars y fotos, con CORS y lectura pública solo de `units/*`), EC2 de infraestructura, una EC2 por microservicio, Elastic IP del BFF y API Gateway. Compila y sube los jars. Si un recurso ya existe lo reutiliza, así que se puede volver a correr. Al terminar imprime la URL del API Gateway. |
 | `redeploy.sh <servicio> ...` | Compila el/los microservicio(s), sube el jar y lo reinicia en su EC2 vía SSM. Ej: `./redeploy.sh catalog reservations` |
 | `seed.sh` | Carga las unidades de ejemplo en el Oracle de AWS (idempotente). |
-| `infra-user-data.sh` | User-data de la EC2 de infraestructura (lo usa `provision.sh`). |
-| `deploy-apps.sh` | Lanza las 7 EC2 de aplicación que falten y actualiza la configuración de las que ya existen (lo usa `provision.sh`). |
+| `kafka-cluster.sh` | Sube `kafka/` (compose y scripts) al bucket y (re)levanta el clúster Kafka de 3 brokers en la EC2 de infraestructura vía SSM, con el mismo `kafka/compose.yml` que en local. También migra una EC2 creada con la versión anterior de un solo broker. |
+| `infra-user-data.sh` | User-data de la EC2 de infraestructura (lo usa `provision.sh`); el clúster Kafka lo levanta con `kafka-cluster-ec2.sh`. |
+| `deploy-apps.sh` | Lanza las 8 EC2 de aplicación que falten y actualiza la configuración de las que ya existen (lo usa `provision.sh`). |
 
 **Despliegue desde cero** (lab nuevo o cuenta distinta):
 
@@ -169,4 +206,4 @@ Las imágenes de referencia de las unidades del catálogo se almacenan en **Amaz
 
 ## Repos relacionados
 
-[frontend-andesstay](https://github.com/MarCOCO999/frontend-andesstay) · [ms-andesstay-bff](https://github.com/MarCOCO999/ms-andesstay-bff) · [ms-andesstay-reservations](https://github.com/MarCOCO999/ms-andesstay-reservations) · [ms-andesstay-catalog](https://github.com/MarCOCO999/ms-andesstay-catalog) · [ms-andesstay-notify](https://github.com/MarCOCO999/ms-andesstay-notify) · [ms-andesstay-audit](https://github.com/MarCOCO999/ms-andesstay-audit) · [ms-andesstay-report](https://github.com/MarCOCO999/ms-andesstay-report) · [ms-andesstay-rabbit-admin](https://github.com/MarCOCO999/ms-andesstay-rabbit-admin)
+[frontend-andesstay](https://github.com/MarCOCO999/frontend-andesstay) · [ms-andesstay-bff](https://github.com/MarCOCO999/ms-andesstay-bff) · [ms-andesstay-reservations](https://github.com/MarCOCO999/ms-andesstay-reservations) · [ms-andesstay-catalog](https://github.com/MarCOCO999/ms-andesstay-catalog) · [ms-andesstay-notify](https://github.com/MarCOCO999/ms-andesstay-notify) · [ms-andesstay-audit](https://github.com/MarCOCO999/ms-andesstay-audit) · [ms-andesstay-report](https://github.com/MarCOCO999/ms-andesstay-report) · [ms-andesstay-rabbit-admin](https://github.com/MarCOCO999/ms-andesstay-rabbit-admin) · [ms-andesstay-kafka-admin](https://github.com/MarCOCO999/ms-andesstay-kafka-admin)

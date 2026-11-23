@@ -1,8 +1,8 @@
 #!/bin/bash
-# Lanza una EC2 t3.small por microservicio (7: bff, reservations, catalog, audit, report,
-# rabbit-admin, notify). Cada instancia descarga su jar desde el bucket
+# Lanza una EC2 t3.small por microservicio (8: bff, reservations, catalog, audit, report,
+# rabbit-admin, kafka-admin, notify). Cada instancia descarga su jar desde el bucket
 # de despliegue (usando el rol LabInstanceProfile, sin claves embebidas) y lo corre como
-# servicio systemd con Corretto 21. El orden importa: reservations necesita la IP privada
+# servicio systemd con Corretto 25 (LTS). El orden importa: reservations necesita la IP privada
 # de catalog, y el BFF las de todos los servicios de dominio.
 #
 # Uso: INFRA_IP=<ip privada infra> APP_SG=<sg> SUBNET=<subnet> ./deploy-apps.sh
@@ -14,7 +14,7 @@ DEPLOY_BUCKET="andesstay-deploy-${ACCOUNT}"
 IMAGES_BUCKET="andesstay-images-${ACCOUNT}"
 AMI=$(aws ssm get-parameter --name /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64 \
   --query Parameter.Value --output text)
-declare -A PORT=([bff]=8081 [reservations]=8082 [catalog]=8083 [audit]=8084 [report]=8085 [rabbit-admin]=8086 [notify]=8090)
+declare -A PORT=([bff]=8081 [reservations]=8082 [catalog]=8083 [audit]=8084 [report]=8085 [rabbit-admin]=8086 [kafka-admin]=8087 [notify]=8090)
 declare -A IP
 
 launch() {
@@ -36,7 +36,7 @@ launch() {
   user_data=$(cat <<EOF
 #!/bin/bash
 set -euxo pipefail
-dnf install -y java-21-amazon-corretto-headless
+dnf install -y java-25-amazon-corretto-headless
 mkdir -p /opt/andesstay
 aws s3 cp s3://${DEPLOY_BUCKET}/jars/ms-andesstay-${svc}.jar /opt/andesstay/app.jar
 cat > /etc/andesstay.env <<ENV
@@ -44,7 +44,7 @@ SERVER_PORT=${PORT[$svc]}
 DB_URL=jdbc:oracle:thin:@${INFRA_IP}:1521/FREEPDB1
 DB_USERNAME=andesstay
 DB_PASSWORD=changeit
-KAFKA_BOOTSTRAP_SERVERS=${INFRA_IP}:9092
+KAFKA_BOOTSTRAP_SERVERS=${INFRA_IP}:9092,${INFRA_IP}:9093,${INFRA_IP}:9094
 RABBITMQ_HOST=${INFRA_IP}
 RABBITMQ_USERNAME=andesstay
 RABBITMQ_PASSWORD=changeit
@@ -104,10 +104,12 @@ launch notify ""
 launch audit ""
 launch report ""
 launch rabbit-admin ""
+launch kafka-admin ""
 launch reservations "CATALOG_SERVICE_URL=http://${IP[catalog]}:8083"
 launch bff "ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-http://localhost:4200}
 RESERVATIONS_SERVICE_URL=http://${IP[reservations]}:8082
 CATALOG_SERVICE_URL=http://${IP[catalog]}:8083
 AUDIT_SERVICE_URL=http://${IP[audit]}:8084
 REPORT_SERVICE_URL=http://${IP[report]}:8085
-RABBIT_ADMIN_SERVICE_URL=http://${IP[rabbit-admin]}:8086"
+RABBIT_ADMIN_SERVICE_URL=http://${IP[rabbit-admin]}:8086
+KAFKA_ADMIN_SERVICE_URL=http://${IP[kafka-admin]}:8087"
