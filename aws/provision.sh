@@ -130,9 +130,14 @@ if [ "$API_ID" = "None" ]; then
   aws apigatewayv2 create-route --api-id "$API_ID" --route-key 'ANY /{proxy+}' --target "integrations/$INT_ID" >/dev/null
   aws apigatewayv2 create-stage --api-id "$API_ID" --stage-name '$default' --auto-deploy >/dev/null
 else
-  INT_ID=$(aws apigatewayv2 get-integrations --api-id "$API_ID" --query 'Items[0].IntegrationId' --output text)
-  aws apigatewayv2 update-integration --api-id "$API_ID" --integration-id "$INT_ID" \
-    --integration-uri "http://${EIP}:8081/{proxy}" >/dev/null
+  # Solo las integraciones hacia el BFF (puerto 8081): tras frontend.sh tambien hay integraciones
+  # hacia el sitio S3. Se cambia solo el host y se conserva la ruta (/{proxy} o /api/{proxy}).
+  aws apigatewayv2 get-integrations --api-id "$API_ID" \
+    --query "Items[?contains(IntegrationUri, ':8081/')].[IntegrationId,IntegrationUri]" --output text |
+  while read -r INT_ID URI; do
+    aws apigatewayv2 update-integration --api-id "$API_ID" --integration-id "$INT_ID" \
+      --integration-uri "$(echo "$URI" | sed -E "s#^http://[^/]+#http://${EIP}:8081#")" >/dev/null
+  done
 fi
 API_URL=$(aws apigatewayv2 get-api --api-id "$API_ID" --query ApiEndpoint --output text)
 
@@ -141,6 +146,7 @@ cat <<EOF
 
 Listo. Los servicios tardan unos minutos en arrancar la primera vez.
   API Gateway : ${API_URL}   (poner esta URL en frontend-andesstay/src/environments/environment.aws.ts)
+  Frontend    : ./frontend.sh  lo publica en ${API_URL} (registrar esa URL como redirect URI SPA en Azure AD)
   RabbitMQ UI : http://${INFRA_PUBLIC}:15672  (andesstay / changeit)
   Kafka UI    : http://${INFRA_PUBLIC}:8089
 Datos de ejemplo del catalogo (una vez que catalog haya arrancado):  ./seed.sh

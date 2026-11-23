@@ -157,7 +157,8 @@ La configuración está en tres lugares coherentes entre sí: el `application.ym
 Para la entrega del caso, esta misma infraestructura corre en una **EC2 de infraestructura** (Oracle + RabbitMQ + el clúster Kafka de 3 brokers vía Docker, la misma configuración que estos `compose.yml`), separada de las EC2 de aplicación (una por microservicio: BFF, reservations, catalog, notify, audit, report, rabbit-admin, kafka-admin). Un **API Gateway** HTTP API queda al frente del BFF como única puerta de entrada pública.
 
 ```
-Angular (localhost:4200) → API Gateway HTTP → BFF (EC2 + Elastic IP :8081) → reservations | catalog | audit | report | rabbit-admin | kafka-admin
+Navegador → API Gateway HTTP ─ /api/** → BFF (EC2 + Elastic IP :8081) → reservations | catalog | audit | report | rabbit-admin | kafka-admin
+                          └─ resto ──→ S3 andesstay-web (frontend Angular)
                                                                                     │
           EC2 infra: Oracle :1521 · RabbitMQ :5672 · Kafka :9092-9094 (3 brokers) ◄──┘ (+ notify)
 ```
@@ -181,6 +182,7 @@ Se corren con **bash** (en Windows, desde Git Bash). Todos usan el rol `LabInsta
 | `seed.sh` | Carga las unidades de ejemplo en el Oracle de AWS (idempotente). |
 | `kafka-cluster.sh` | Sube `kafka/` (compose y scripts) al bucket y (re)levanta el clúster Kafka de 3 brokers en la EC2 de infraestructura vía SSM, con el mismo `kafka/compose.yml` que en local. También migra una EC2 creada con la versión anterior de un solo broker. |
 | `infra-user-data.sh` | User-data de la EC2 de infraestructura (lo usa `provision.sh`); el clúster Kafka lo levanta con `kafka-cluster-ec2.sh`. |
+| `frontend.sh` | Compila el frontend (`ng build`), lo sube a un bucket S3 con website hosting y lo publica en el **mismo API Gateway** (`/api/**` → BFF, el resto → S3), con HTTPS. CloudFront no está disponible en el Learner Lab. También agrega ese origen al CORS del BFF y del bucket de fotos. Se vuelve a correr para publicar una versión nueva del frontend. |
 | `deploy-apps.sh` | Lanza las 8 EC2 de aplicación que falten y actualiza la configuración de las que ya existen (lo usa `provision.sh`). |
 
 **Despliegue desde cero** (lab nuevo o cuenta distinta):
@@ -191,7 +193,9 @@ cd infra/aws
 ./seed.sh        # unos minutos después, cuando catalog ya arrancó
 ```
 
-Después, poner la URL del API Gateway que imprimió `provision.sh` en `frontend-andesstay/src/environments/environment.aws.ts` y levantar el frontend contra AWS con `npx ng serve -c aws`.
+Después, publicar el frontend con `./frontend.sh` (requiere Node.js 22) y registrar la URL del API Gateway que imprime, más `<URL>/login`, como redirect URI de la plataforma **Single-page application** en la app registration de Azure AD. El frontend queda en esa URL, sin instalar nada en el computador que lo usa.
+
+Para desarrollar el frontend en local contra el backend de AWS, poner la misma URL en `frontend-andesstay/src/environments/environment.aws.ts` y correr `npx ng serve -c aws` (http://localhost:4200).
 
 **Sesiones siguientes del mismo lab:** no hay que desplegar nada. Al iniciar el lab las EC2 se encienden solas, y cada servicio arranca por sí mismo (systemd en las EC2 de aplicación, `restart: unless-stopped` en los contenedores). Las IP privadas no cambian y el BFF tiene Elastic IP, así que el API Gateway sigue funcionando. Lo único que cambia es la IP pública de la EC2 de infraestructura (UIs de RabbitMQ `:15672`, usuario `andesstay` / `changeit`, y Kafka `:8089`):
 
